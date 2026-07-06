@@ -654,13 +654,340 @@ fig = plot_heatmap(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+# =========================
+# Bay1 / Bay2 correlation analysis
+# =========================
 
+st.header("4. Bay1 / Bay2 Correlation Analysis")
+
+st.caption(
+    "This section checks correlation using the same sample across different bays and fixtures. "
+    "It helps identify whether the leakage trend is driven by fixture difference, bay-to-bay difference, or sample condition."
+)
+
+# Average repeated tests first:
+# same Sample + Fixture + Bay -> mean leakage
+bay_corr_base = (
+    df
+    .groupby(["Sample", "Fixture", "Bay"], dropna=False)["Leakage"]
+    .mean()
+    .reset_index()
+)
+
+bay_corr_base["Sample"] = bay_corr_base["Sample"].astype(str).str.strip()
+bay_corr_base["Fixture"] = bay_corr_base["Fixture"].astype(str).str.strip()
+bay_corr_base["Bay"] = bay_corr_base["Bay"].astype(str).str.strip()
+
+# Create a combined column, e.g. 2.0_Bay1, 3.1_Bay2
+bay_corr_base["Fixture_Bay"] = (
+    bay_corr_base["Fixture"].astype(str)
+    + "_Bay"
+    + bay_corr_base["Bay"].astype(str)
+)
+
+# Pivot to wide format:
+# rows = Sample
+# columns = Fixture_Bay
+# values = mean leakage
+wide_fixture_bay = bay_corr_base.pivot_table(
+    index="Sample",
+    columns="Fixture_Bay",
+    values="Leakage",
+    aggfunc="mean"
+)
+
+# Sort columns by fixture and bay
+def fixture_bay_sort_key(col):
+    col = str(col)
+    match = re.search(r"(\d+\.?\d*)_Bay(\d+)", col)
+
+    if match:
+        fixture = float(match.group(1))
+        bay = int(match.group(2))
+        return (fixture, bay)
+
+    return (9999, 9999)
+
+
+wide_fixture_bay = wide_fixture_bay[
+    sorted(wide_fixture_bay.columns, key=fixture_bay_sort_key)
+]
+
+st.subheader("4.1 Same sample wide table: Fixture + Bay")
+
+st.dataframe(wide_fixture_bay, use_container_width=True)
+
+
+# =========================
+# 4.2 Correlation heatmap: all Fixture + Bay combinations
+# =========================
+
+st.subheader("4.2 Correlation heatmap: Fixture + Bay combinations")
+
+corr_fixture_bay = wide_fixture_bay.corr(method="pearson")
+
+fig = px.imshow(
+    corr_fixture_bay.values,
+    x=[str(x) for x in corr_fixture_bay.columns],
+    y=[str(y) for y in corr_fixture_bay.index],
+    text_auto=".2f",
+    aspect="auto",
+    color_continuous_scale="RdBu_r",
+    zmin=-1,
+    zmax=1,
+    title="Correlation Heatmap - Same Sample Across Fixture + Bay"
+)
+
+fig.update_xaxes(
+    type="category",
+    categoryorder="array",
+    categoryarray=[str(x) for x in corr_fixture_bay.columns]
+)
+
+fig.update_yaxes(
+    type="category",
+    categoryorder="array",
+    categoryarray=[str(y) for y in corr_fixture_bay.index]
+)
+
+fig.update_layout(
+    xaxis_title="Fixture / Bay",
+    yaxis_title="Fixture / Bay"
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+
+# =========================
+# 4.3 Bay1 vs Bay2 correlation under same fixture
+# =========================
+
+st.subheader("4.3 Bay1 vs Bay2 correlation under same fixture")
+
+bay_pair_rows = []
+
+for fixture in fixture_order:
+    bay1_col = f"{fixture}_Bay1"
+    bay2_col = f"{fixture}_Bay2"
+
+    if bay1_col in wide_fixture_bay.columns and bay2_col in wide_fixture_bay.columns:
+        pair_df = wide_fixture_bay[[bay1_col, bay2_col]].dropna()
+
+        if len(pair_df) >= 2:
+            corr_value = pair_df[bay1_col].corr(pair_df[bay2_col])
+            mean_bay1 = pair_df[bay1_col].mean()
+            mean_bay2 = pair_df[bay2_col].mean()
+            mean_delta = mean_bay2 - mean_bay1
+            mae = (pair_df[bay2_col] - pair_df[bay1_col]).abs().mean()
+            max_abs_delta = (pair_df[bay2_col] - pair_df[bay1_col]).abs().max()
+
+            bay_pair_rows.append({
+                "Fixture": fixture,
+                "Pair": f"{bay1_col} vs {bay2_col}",
+                "N": len(pair_df),
+                "Correlation": corr_value,
+                "Bay1_Mean": mean_bay1,
+                "Bay2_Mean": mean_bay2,
+                "Delta_Bay2_minus_Bay1": mean_delta,
+                "MAE": mae,
+                "Max_Abs_Delta": max_abs_delta,
+            })
+
+bay_pair_summary = pd.DataFrame(bay_pair_rows)
+
+if not bay_pair_summary.empty:
+    st.dataframe(bay_pair_summary, use_container_width=True)
+
+    fig = px.bar(
+        bay_pair_summary,
+        x="Fixture",
+        y="Correlation",
+        text_auto=".2f",
+        title="Bay1 vs Bay2 Correlation by Fixture",
+        category_orders={"Fixture": fixture_order}
+    )
+
+    fig.update_xaxes(
+        type="category",
+        categoryorder="array",
+        categoryarray=fixture_order
+    )
+
+    fig.update_yaxes(
+        range=[-1, 1],
+        title="Correlation"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+else:
+    st.warning("No valid Bay1/Bay2 pairs found. Please check Bay naming, e.g. Bay should be 1 and 2.")
+
+
+# =========================
+# 4.4 Fixture-to-fixture correlation under same bay
+# =========================
+
+st.subheader("4.4 Fixture-to-fixture correlation under same bay")
+
+fixture_pair_rows = []
+
+for bay in bay_order:
+    bay_cols = [
+        col for col in wide_fixture_bay.columns
+        if str(col).endswith(f"_Bay{bay}")
+    ]
+
+    bay_cols = sorted(bay_cols, key=fixture_bay_sort_key)
+
+    for i in range(len(bay_cols)):
+        for j in range(i + 1, len(bay_cols)):
+            col_a = bay_cols[i]
+            col_b = bay_cols[j]
+
+            pair_df = wide_fixture_bay[[col_a, col_b]].dropna()
+
+            if len(pair_df) >= 2:
+                corr_value = pair_df[col_a].corr(pair_df[col_b])
+                mean_a = pair_df[col_a].mean()
+                mean_b = pair_df[col_b].mean()
+                mean_delta = mean_b - mean_a
+                mae = (pair_df[col_b] - pair_df[col_a]).abs().mean()
+                max_abs_delta = (pair_df[col_b] - pair_df[col_a]).abs().max()
+
+                fixture_pair_rows.append({
+                    "Bay": bay,
+                    "Pair": f"{col_a} vs {col_b}",
+                    "N": len(pair_df),
+                    "Correlation": corr_value,
+                    "Mean_A": mean_a,
+                    "Mean_B": mean_b,
+                    "Delta_B_minus_A": mean_delta,
+                    "MAE": mae,
+                    "Max_Abs_Delta": max_abs_delta,
+                })
+
+fixture_pair_summary = pd.DataFrame(fixture_pair_rows)
+
+if not fixture_pair_summary.empty:
+    st.dataframe(fixture_pair_summary, use_container_width=True)
+
+    fig = px.bar(
+        fixture_pair_summary,
+        x="Pair",
+        y="Correlation",
+        color="Bay",
+        text_auto=".2f",
+        title="Fixture-to-Fixture Correlation Under Same Bay"
+    )
+
+    fig.update_xaxes(
+        type="category",
+        tickangle=35
+    )
+
+    fig.update_yaxes(
+        range=[-1, 1],
+        title="Correlation"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+else:
+    st.warning("No valid fixture-to-fixture pairs found.")
+
+
+# =========================
+# 4.5 Interactive scatter: select any two Fixture + Bay combinations
+# =========================
+
+st.subheader("4.5 Scatter plot for selected Fixture + Bay pair")
+
+available_columns = [str(c) for c in wide_fixture_bay.columns]
+
+if len(available_columns) >= 2:
+    c1, c2 = st.columns(2)
+
+    with c1:
+        x_col = st.selectbox(
+            "Select X axis",
+            available_columns,
+            index=0,
+            key="corr_scatter_x_col"
+        )
+
+    with c2:
+        y_col = st.selectbox(
+            "Select Y axis",
+            available_columns,
+            index=1,
+            key="corr_scatter_y_col"
+        )
+
+    scatter_df = wide_fixture_bay[[x_col, y_col]].dropna().reset_index()
+
+    if len(scatter_df) >= 2:
+        selected_corr = scatter_df[x_col].corr(scatter_df[y_col])
+
+        fig = px.scatter(
+            scatter_df,
+            x=x_col,
+            y=y_col,
+            text="Sample",
+            trendline="ols",
+            title=f"{x_col} vs {y_col}, Correlation = {selected_corr:.2f}"
+        )
+
+        fig.add_hline(
+            y=SPEC,
+            line_dash="dash",
+            annotation_text=f"Y Spec={SPEC}"
+        )
+
+        fig.add_vline(
+            x=SPEC,
+            line_dash="dash",
+            annotation_text=f"X Spec={SPEC}"
+        )
+
+        fig.update_traces(textposition="top center")
+
+        fig.update_xaxes(title=x_col)
+        fig.update_yaxes(title=y_col)
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.dataframe(scatter_df, use_container_width=True)
+
+    else:
+        st.warning("Not enough matched samples for selected pair.")
+
+else:
+    st.warning("Not enough Fixture + Bay combinations for scatter analysis.")
+
+
+# =========================
+# 4.6 Interpretation guide
+# =========================
+
+st.subheader("4.6 How to read this analysis")
+
+st.markdown(
+    """
+| Correlation range | Meaning | DOE interpretation |
+|---|---|---|
+| > 0.8 | Strong positive correlation | The two bays / fixtures show similar sample trend |
+| 0.5 to 0.8 | Moderate positive correlation | Some consistency, but still affected by fixture or bay condition |
+| -0.5 to 0.5 | Weak or no correlation | The two conditions may not reflect the same leakage trend |
+| < -0.5 | Negative correlation | Higher leakage in one condition tends to become lower in another; possible fixture/bay/loading interaction |
+"""
+)
 
 # =========================
 # Abnormality analysis
 # =========================
 
-st.header("4. Abnormality analysis")
+st.header("5. Abnormality analysis")
 
 abnormal = summary_sample_bay_fixture[
     (summary_sample_bay_fixture["Mean"] > SPEC) |
@@ -714,7 +1041,7 @@ else:
 # Before vs After comparison
 # =========================
 
-st.header("4. Before vs After Comparison")
+st.header("5. Before vs After Comparison")
 
 st.caption(
     "Upload previous / before data here. The app will compare it with the current uploaded data above."
