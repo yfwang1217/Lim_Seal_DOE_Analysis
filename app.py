@@ -1,4 +1,3 @@
-
 import io
 import re
 import csv
@@ -86,6 +85,7 @@ def parse_section_csv(uploaded_file, source_name, spec):
                 current_sample = None
                 found_fixture = True
                 break
+
         if found_fixture:
             continue
 
@@ -141,6 +141,7 @@ def parse_flat_csv(uploaded_file, source_name, spec):
     col_map = {}
     for c in df.columns:
         lc = str(c).strip().lower()
+
         if lc in ["sample", "sn"]:
             col_map[c] = "Sample"
         elif lc in ["fixture", "carrier", "carrier_id", "carrier version"]:
@@ -161,10 +162,13 @@ def parse_flat_csv(uploaded_file, source_name, spec):
 
     if "Sample" not in df.columns:
         df["Sample"] = np.arange(1, len(df) + 1).astype(str)
+
     if "Fixture" not in df.columns:
         df["Fixture"] = "Unknown"
+
     if "Bay" not in df.columns:
         df["Bay"] = "Unknown"
+
     if "Result" not in df.columns:
         df["Result"] = ""
 
@@ -178,7 +182,18 @@ def parse_flat_csv(uploaded_file, source_name, spec):
     df["Spec"] = spec
     df["Spec_Result"] = np.where(df["Leakage"] > spec, "NG", "OK")
 
-    keep_cols = ["Source", "Sample", "Fixture", "Bay", "Result", "Pressure", "Leakage", "Spec", "Spec_Result"]
+    keep_cols = [
+        "Source",
+        "Sample",
+        "Fixture",
+        "Bay",
+        "Result",
+        "Pressure",
+        "Leakage",
+        "Spec",
+        "Spec_Result"
+    ]
+
     return df[keep_cols], encoding_used
 
 
@@ -218,15 +233,22 @@ def summary_table(data, group_cols):
     summary["IQR"] = summary["Q3"] - summary["Q1"]
     summary["Range"] = summary["Max"] - summary["Min"]
     summary["NG_Rate"] = summary["NG_Count"] / summary["N"]
+
     return summary
 
 
 def to_excel_download(dataframes):
     output = io.BytesIO()
+
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for name, data in dataframes.items():
             clean_name = name[:31]
-            data.to_excel(writer, sheet_name=clean_name, index=True if data.index.name is not None else False)
+            data.to_excel(
+                writer,
+                sheet_name=clean_name,
+                index=True if data.index.name is not None else False
+            )
+
     return output.getvalue()
 
 
@@ -240,6 +262,7 @@ if not uploaded_files:
     st.info("Upload CSV files to start analysis. You can upload Bay1 and Bay2 files together.")
     st.stop()
 
+
 parsed_list = []
 file_info = []
 
@@ -247,19 +270,27 @@ for f in uploaded_files:
     try:
         parsed, encoding, fmt = parse_uploaded_file(f, SPEC)
         parsed_list.append(parsed)
-        file_info.append({"File": f.name, "Rows parsed": len(parsed), "Encoding": encoding, "Format": fmt})
+        file_info.append({
+            "File": f.name,
+            "Rows parsed": len(parsed),
+            "Encoding": encoding,
+            "Format": fmt
+        })
     except Exception as e:
         st.error(f"Failed to parse {f.name}: {e}")
 
 if not parsed_list:
     st.stop()
 
+
 df = pd.concat(parsed_list, ignore_index=True)
 df = df.dropna(subset=["Leakage"])
+
 df["Sample"] = df["Sample"].astype(str)
 df["Fixture"] = df["Fixture"].astype(str)
 df["Bay"] = df["Bay"].astype(str)
 df["NG_Flag"] = np.where(df["Leakage"] > SPEC, 1, 0)
+
 
 def fixture_sort_key(x):
     try:
@@ -267,12 +298,15 @@ def fixture_sort_key(x):
     except Exception:
         return 9999
 
+
 fixture_order = sorted(df["Fixture"].dropna().unique(), key=fixture_sort_key)
 bay_order = sorted(df["Bay"].dropna().unique())
+
 
 with st.expander("File parsing result", expanded=True):
     st.dataframe(pd.DataFrame(file_info), use_container_width=True)
     st.dataframe(df.head(50), use_container_width=True)
+
 
 total_n = len(df)
 total_ng = int(df["NG_Flag"].sum())
@@ -285,10 +319,12 @@ c2.metric("NG count", f"{total_ng}")
 c3.metric("NG rate", f"{ng_rate:.1%}")
 c4.metric("Max leakage", f"{max_leakage:.4f}")
 
+
 summary_fixture = summary_table(df, ["Fixture"])
 summary_bay_fixture = summary_table(df, ["Bay", "Fixture"])
 summary_sample_fixture = summary_table(df, ["Sample", "Fixture"])
 summary_sample_bay_fixture = summary_table(df, ["Sample", "Bay", "Fixture"])
+
 
 st.header("1. Summary tables")
 
@@ -301,12 +337,16 @@ tab1, tab2, tab3, tab4 = st.tabs([
 
 with tab1:
     st.dataframe(summary_fixture, use_container_width=True)
+
 with tab2:
     st.dataframe(summary_bay_fixture, use_container_width=True)
+
 with tab3:
     st.dataframe(summary_sample_fixture, use_container_width=True)
+
 with tab4:
     st.dataframe(summary_sample_bay_fixture, use_container_width=True)
+
 
 st.header("2. Distribution charts")
 
@@ -321,7 +361,11 @@ with col1:
         category_orders={"Fixture": fixture_order},
         title="Leakage Distribution by Fixture"
     )
-    fig.add_hline(y=SPEC, line_dash="dash", annotation_text=f"Spec={SPEC}")
+    fig.add_hline(
+        y=SPEC,
+        line_dash="dash",
+        annotation_text=f"Spec={SPEC}"
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 with col2:
@@ -333,38 +377,62 @@ with col2:
         category_orders={"Fixture": fixture_order},
         title="Leakage Scatter by Fixture and Bay"
     )
-    fig.add_hline(y=SPEC, line_dash="dash", annotation_text=f"Spec={SPEC}")
+    fig.add_hline(
+        y=SPEC,
+        line_dash="dash",
+        annotation_text=f"Spec={SPEC}"
+    )
     st.plotly_chart(fig, use_container_width=True)
 
+
 st.subheader("Histogram by fixture")
-selected_fixture_for_hist = st.selectbox("Select fixture for histogram", fixture_order)
+
+selected_fixture_for_hist = st.selectbox(
+    "Select fixture for histogram",
+    fixture_order
+)
+
 hist_df = df[df["Fixture"] == selected_fixture_for_hist]
+
 fig = px.histogram(
     hist_df,
     x="Leakage",
     nbins=20,
     title=f"Leakage Histogram - Fixture {selected_fixture_for_hist}"
 )
-fig.add_vline(x=SPEC, line_dash="dash", annotation_text=f"Spec={SPEC}")
+
+fig.add_vline(
+    x=SPEC,
+    line_dash="dash",
+    annotation_text=f"Spec={SPEC}"
+)
+
 st.plotly_chart(fig, use_container_width=True)
+
 
 st.header("3. Heatmaps")
 
 pivot_mean_sample_fixture = df.pivot_table(
-    index="Sample", columns="Fixture", values="Leakage", aggfunc="mean"
+    index="Sample",
+    columns="Fixture",
+    values="Leakage",
+    aggfunc="mean"
 ).reindex(columns=fixture_order)
 
 pivot_ng_sample_fixture = df.pivot_table(
-    index="Sample", columns="Fixture", values="NG_Flag", aggfunc="sum"
+    index="Sample",
+    columns="Fixture",
+    values="NG_Flag",
+    aggfunc="sum"
 ).reindex(columns=fixture_order)
 
 pivot_mean_fixture_bay = df.pivot_table(
-    index="Fixture", columns="Bay", values="Leakage", aggfunc="mean"
+    index="Fixture",
+    columns="Bay",
+    values="Leakage",
+    aggfunc="mean"
 ).reindex(index=fixture_order, columns=bay_order)
 
-pivot_max_sample_fixture = df.pivot_table(
-    index="Sample", columns="Fixture", values="Leakage", aggfunc="max"
-).reindex(columns=fixture_order)
 
 h1, h2 = st.columns(2)
 
@@ -390,62 +458,21 @@ with h2:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-h3, h4 = st.columns(2)
-
-with h3:
-    fig = px.imshow(
-        pivot_mean_fixture_bay,
-        text_auto=".3f",
-        aspect="auto",
-        color_continuous_scale="YlGnBu",
-        zmin=0,
-        zmax=SPEC,
-        title="Mean Leakage by Fixture and Bay"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-with h4:
-    fig = px.imshow(
-        pivot_max_sample_fixture,
-        text_auto=".3f",
-        aspect="auto",
-        color_continuous_scale="YlOrRd",
-        zmin=0,
-        zmax=SPEC,
-        title="Max Leakage by Sample and Fixture"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-st.header("4. Correlation analysis")
-
-sample_fixture_mean = (
-    df.groupby(["Sample", "Fixture"])["Leakage"]
-    .mean()
-    .reset_index()
-)
-
-wide_sample_fixture = sample_fixture_mean.pivot(
-    index="Sample", columns="Fixture", values="Leakage"
-).reindex(columns=fixture_order)
-
-corr_method = st.radio("Correlation method", ["pearson", "spearman"], horizontal=True)
-corr = wide_sample_fixture.corr(method=corr_method)
 
 fig = px.imshow(
-    corr,
-    text_auto=".2f",
+    pivot_mean_fixture_bay,
+    text_auto=".3f",
     aspect="auto",
-    color_continuous_scale="RdBu_r",
-    zmin=-1,
-    zmax=1,
-    title=f"Correlation Heatmap - {corr_method.title()}"
+    color_continuous_scale="YlGnBu",
+    zmin=0,
+    zmax=SPEC,
+    title="Mean Leakage by Fixture and Bay"
 )
+
 st.plotly_chart(fig, use_container_width=True)
 
-with st.expander("Wide table used for correlation"):
-    st.dataframe(wide_sample_fixture, use_container_width=True)
 
-st.header("5. Abnormality analysis")
+st.header("4. Abnormality analysis")
 
 abnormal = summary_sample_bay_fixture[
     (summary_sample_bay_fixture["Mean"] > SPEC) |
@@ -458,10 +485,15 @@ if not abnormal.empty:
         by=["NG_Count", "Max", "Mean"],
         ascending=[False, False, False]
     )
+
     st.dataframe(abnormal, use_container_width=True)
 
     abnormal_samples = abnormal["Sample"].astype(str).unique().tolist()
-    selected_sample = st.selectbox("Select abnormal sample for detail plot", abnormal_samples)
+
+    selected_sample = st.selectbox(
+        "Select abnormal sample for detail plot",
+        abnormal_samples
+    )
 
     temp = df[df["Sample"].astype(str) == selected_sample]
 
@@ -473,12 +505,20 @@ if not abnormal.empty:
         category_orders={"Fixture": fixture_order},
         title=f"Abnormal Sample Detail - Sample {selected_sample}"
     )
-    fig.add_hline(y=SPEC, line_dash="dash", annotation_text=f"Spec={SPEC}")
+
+    fig.add_hline(
+        y=SPEC,
+        line_dash="dash",
+        annotation_text=f"Spec={SPEC}"
+    )
+
     st.plotly_chart(fig, use_container_width=True)
+
 else:
     st.success("No abnormal groups found by current criteria.")
 
-st.header("6. Download report data")
+
+st.header("5. Download report data")
 
 excel_bytes = to_excel_download({
     "Raw_Parsed": df,
@@ -489,8 +529,6 @@ excel_bytes = to_excel_download({
     "Mean_Sample_Fixture": pivot_mean_sample_fixture,
     "NG_Sample_Fixture": pivot_ng_sample_fixture,
     "Mean_Fixture_Bay": pivot_mean_fixture_bay,
-    "Max_Sample_Fixture": pivot_max_sample_fixture,
-    "Correlation": corr,
     "Abnormal_Groups": abnormal if not abnormal.empty else pd.DataFrame(),
 })
 
