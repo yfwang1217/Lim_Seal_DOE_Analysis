@@ -13,7 +13,10 @@ st.set_page_config(
 )
 
 st.title("LIM Seal Self-Seal DOE Analysis")
-st.caption("Upload Everwin / ICT raw CSV files to generate fixture, bay, sample, heatmap, and abnormality analysis automatically.")
+st.caption(
+    "Upload Everwin / ICT raw CSV files to generate fixture, bay, sample, "
+    "heatmap, and abnormality analysis automatically."
+)
 
 st.sidebar.header("Settings")
 SPEC = st.sidebar.number_input(
@@ -26,8 +29,15 @@ SPEC = st.sidebar.number_input(
 
 st.sidebar.markdown("---")
 st.sidebar.write("Expected columns or raw section format:")
-st.sidebar.code("Result, BayID, Date, StartTime, EndTime, air_pressure, Leakage_value", language="text")
+st.sidebar.code(
+    "Result, BayID, Date, StartTime, EndTime, air_pressure, Leakage_value",
+    language="text"
+)
 
+
+# =========================
+# Helper functions
+# =========================
 
 def read_csv_rows(uploaded_file):
     raw = uploaded_file.getvalue()
@@ -52,21 +62,119 @@ def safe_float(x):
         return np.nan
 
 
+def fixture_sort_key(x):
+    try:
+        return float(str(x))
+    except Exception:
+        return 9999
+
+
+def sample_sort_key(x):
+    x = str(x)
+    try:
+        return int(x)
+    except Exception:
+        return x
+
+
+def force_category_x(fig, category_order):
+    fig.update_xaxes(
+        type="category",
+        categoryorder="array",
+        categoryarray=[str(x) for x in category_order]
+    )
+    return fig
+
+
+def force_category_y(fig, category_order):
+    fig.update_yaxes(
+        type="category",
+        categoryorder="array",
+        categoryarray=[str(x) for x in category_order]
+    )
+    return fig
+
+
+def clean_pivot_axis(pivot):
+    pivot = pivot.copy()
+    pivot.index = [str(x) for x in pivot.index]
+    pivot.columns = [str(x) for x in pivot.columns]
+    return pivot
+
+
+def plot_heatmap(
+    pivot,
+    title,
+    color_scale,
+    text_format=".3f",
+    zmin=None,
+    zmax=None,
+    colorbar_title=None
+):
+    """
+    Use pivot.values + explicit x/y labels to avoid Plotly treating
+    2.0 / 3.1 / 3.2 as continuous numeric axis.
+    """
+    pivot = clean_pivot_axis(pivot)
+
+    x_labels = [str(x) for x in pivot.columns]
+    y_labels = [str(y) for y in pivot.index]
+
+    fig = px.imshow(
+        pivot.values,
+        x=x_labels,
+        y=y_labels,
+        text_auto=text_format,
+        aspect="auto",
+        color_continuous_scale=color_scale,
+        zmin=zmin,
+        zmax=zmax,
+        title=title
+    )
+
+    fig.update_xaxes(
+        type="category",
+        categoryorder="array",
+        categoryarray=x_labels
+    )
+
+    fig.update_yaxes(
+        type="category",
+        categoryorder="array",
+        categoryarray=y_labels
+    )
+
+    if colorbar_title:
+        fig.update_coloraxes(colorbar_title=colorbar_title)
+
+    return fig
+
+
 def parse_section_csv(uploaded_file, source_name, spec):
     rows, encoding = read_csv_rows(uploaded_file)
+
     if not rows:
         return pd.DataFrame(), encoding
 
     header = [str(x).strip() for x in rows[0]]
 
     try:
-        leak_idx = [i for i, h in enumerate(header) if "Leakage_value" in h or "Leakage" in h][0]
-        pressure_idx = [i for i, h in enumerate(header) if "air_pressure" in h or "Pressure" in h][0]
+        leak_idx = [
+            i for i, h in enumerate(header)
+            if "Leakage_value" in h or "Leakage" in h
+        ][0]
+
+        pressure_idx = [
+            i for i, h in enumerate(header)
+            if "air_pressure" in h or "Pressure" in h
+        ][0]
+
         result_idx = header.index("Result")
         bay_idx = header.index("BayID")
         date_idx = header.index("Date")
         start_idx = header.index("StartTime")
         end_idx = header.index("EndTime")
+
     except Exception:
         return None, encoding
 
@@ -78,7 +186,9 @@ def parse_section_csv(uploaded_file, source_name, spec):
         r = r + [""] * (len(header) - len(r))
         cells = [str(c).strip() for c in r]
 
+        # Detect fixture section, e.g. bay1 2.0 / bay2 3.1
         found_fixture = False
+
         for c in cells[:8]:
             if re.search(r"bay\s*\d+\s*\d\.\d", c, flags=re.I):
                 current_fixture = re.search(r"(\d\.\d)", c).group(1)
@@ -89,14 +199,18 @@ def parse_section_csv(uploaded_file, source_name, spec):
         if found_fixture:
             continue
 
+        # Detect sample number row
         if not cells[date_idx]:
             nums = [c for c in cells[:8] if re.fullmatch(r"\d+", c)]
+
             if nums and current_fixture:
                 current_sample = nums[0]
                 continue
 
+        # Detect actual test data row
         if cells[date_idx] and cells[result_idx]:
             leakage = safe_float(cells[leak_idx])
+
             if np.isnan(leakage):
                 continue
 
@@ -106,9 +220,9 @@ def parse_section_csv(uploaded_file, source_name, spec):
                 "Source": source_name,
                 "Row": row_no,
                 "Date": cells[date_idx],
-                "Sample": str(current_sample),
-                "Fixture": str(current_fixture),
-                "Bay": str(cells[bay_idx]),
+                "Sample": str(current_sample).strip(),
+                "Fixture": str(current_fixture).strip(),
+                "Bay": str(cells[bay_idx]).strip(),
                 "Result": str(cells[result_idx]).strip().lower(),
                 "StartTime": cells[start_idx],
                 "EndTime": cells[end_idx],
@@ -124,6 +238,7 @@ def parse_section_csv(uploaded_file, source_name, spec):
 def parse_flat_csv(uploaded_file, source_name, spec):
     raw = uploaded_file.getvalue()
     encodings = ["gbk", "utf-8-sig", "utf-8", "latin1"]
+
     df = None
     encoding_used = None
 
@@ -139,19 +254,25 @@ def parse_flat_csv(uploaded_file, source_name, spec):
         raise ValueError(f"Cannot read {uploaded_file.name}")
 
     col_map = {}
+
     for c in df.columns:
         lc = str(c).strip().lower()
 
         if lc in ["sample", "sn"]:
             col_map[c] = "Sample"
+
         elif lc in ["fixture", "carrier", "carrier_id", "carrier version"]:
             col_map[c] = "Fixture"
+
         elif lc in ["bay", "bayid", "bay id"]:
             col_map[c] = "Bay"
+
         elif "leakage" in lc or "leak" in lc:
             col_map[c] = "Leakage"
+
         elif lc == "result":
             col_map[c] = "Result"
+
         elif "pressure" in lc:
             col_map[c] = "Pressure"
 
@@ -175,10 +296,12 @@ def parse_flat_csv(uploaded_file, source_name, spec):
     df["Source"] = source_name
     df["Leakage"] = pd.to_numeric(df["Leakage"], errors="coerce")
     df["Pressure"] = pd.to_numeric(df.get("Pressure", np.nan), errors="coerce")
-    df["Sample"] = df["Sample"].astype(str)
-    df["Fixture"] = df["Fixture"].astype(str)
-    df["Bay"] = df["Bay"].astype(str)
+
+    df["Sample"] = df["Sample"].astype(str).str.strip()
+    df["Fixture"] = df["Fixture"].astype(str).str.strip()
+    df["Bay"] = df["Bay"].astype(str).str.strip()
     df["Result"] = df["Result"].astype(str).str.lower()
+
     df["Spec"] = spec
     df["Spec_Result"] = np.where(df["Leakage"] > spec, "NG", "OK")
 
@@ -252,6 +375,10 @@ def to_excel_download(dataframes):
     return output.getvalue()
 
 
+# =========================
+# Upload files
+# =========================
+
 uploaded_files = st.file_uploader(
     "Upload one or multiple CSV files",
     type=["csv"],
@@ -269,44 +396,71 @@ file_info = []
 for f in uploaded_files:
     try:
         parsed, encoding, fmt = parse_uploaded_file(f, SPEC)
+
         parsed_list.append(parsed)
+
         file_info.append({
             "File": f.name,
             "Rows parsed": len(parsed),
             "Encoding": encoding,
             "Format": fmt
         })
+
     except Exception as e:
         st.error(f"Failed to parse {f.name}: {e}")
+
 
 if not parsed_list:
     st.stop()
 
 
+# =========================
+# Clean data
+# =========================
+
 df = pd.concat(parsed_list, ignore_index=True)
 df = df.dropna(subset=["Leakage"])
 
-df["Sample"] = df["Sample"].astype(str)
-df["Fixture"] = df["Fixture"].astype(str)
-df["Bay"] = df["Bay"].astype(str)
+df["Sample"] = df["Sample"].astype(str).str.strip()
+df["Fixture"] = df["Fixture"].astype(str).str.strip()
+df["Bay"] = df["Bay"].astype(str).str.strip()
+
+# Clean abnormal string values
+df["Sample"] = df["Sample"].replace(["None", "nan", ""], "Unknown")
+df["Fixture"] = df["Fixture"].replace(["None", "nan", ""], "Unknown")
+df["Bay"] = df["Bay"].replace(["None", "nan", ""], "Unknown")
+
 df["NG_Flag"] = np.where(df["Leakage"] > SPEC, 1, 0)
 
 
-def fixture_sort_key(x):
-    try:
-        return float(x)
-    except Exception:
-        return 9999
+fixture_order = sorted(
+    [str(x) for x in df["Fixture"].dropna().unique()],
+    key=fixture_sort_key
+)
+
+bay_order = sorted(
+    [str(x) for x in df["Bay"].dropna().unique()],
+    key=fixture_sort_key
+)
+
+sample_order = sorted(
+    [str(x) for x in df["Sample"].dropna().unique()],
+    key=sample_sort_key
+)
 
 
-fixture_order = sorted(df["Fixture"].dropna().unique(), key=fixture_sort_key)
-bay_order = sorted(df["Bay"].dropna().unique())
-
+# =========================
+# File parsing result
+# =========================
 
 with st.expander("File parsing result", expanded=True):
     st.dataframe(pd.DataFrame(file_info), use_container_width=True)
     st.dataframe(df.head(50), use_container_width=True)
 
+
+# =========================
+# KPI
+# =========================
 
 total_n = len(df)
 total_ng = int(df["NG_Flag"].sum())
@@ -314,11 +468,16 @@ ng_rate = total_ng / total_n if total_n else 0
 max_leakage = df["Leakage"].max()
 
 c1, c2, c3, c4 = st.columns(4)
+
 c1.metric("Total rows", f"{total_n}")
 c2.metric("NG count", f"{total_ng}")
 c3.metric("NG rate", f"{ng_rate:.1%}")
 c4.metric("Max leakage", f"{max_leakage:.4f}")
 
+
+# =========================
+# Summary
+# =========================
 
 summary_fixture = summary_table(df, ["Fixture"])
 summary_bay_fixture = summary_table(df, ["Bay", "Fixture"])
@@ -348,6 +507,10 @@ with tab4:
     st.dataframe(summary_sample_bay_fixture, use_container_width=True)
 
 
+# =========================
+# Distribution charts
+# =========================
+
 st.header("2. Distribution charts")
 
 col1, col2 = st.columns(2)
@@ -361,12 +524,17 @@ with col1:
         category_orders={"Fixture": fixture_order},
         title="Leakage Distribution by Fixture"
     )
+
     fig.add_hline(
         y=SPEC,
         line_dash="dash",
         annotation_text=f"Spec={SPEC}"
     )
+
+    force_category_x(fig, fixture_order)
+
     st.plotly_chart(fig, use_container_width=True)
+
 
 with col2:
     fig = px.strip(
@@ -374,14 +542,21 @@ with col2:
         x="Fixture",
         y="Leakage",
         color="Bay",
-        category_orders={"Fixture": fixture_order},
+        category_orders={
+            "Fixture": fixture_order,
+            "Bay": bay_order
+        },
         title="Leakage Scatter by Fixture and Bay"
     )
+
     fig.add_hline(
         y=SPEC,
         line_dash="dash",
         annotation_text=f"Spec={SPEC}"
     )
+
+    force_category_x(fig, fixture_order)
+
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -410,6 +585,10 @@ fig.add_vline(
 st.plotly_chart(fig, use_container_width=True)
 
 
+# =========================
+# Heatmaps
+# =========================
+
 st.header("3. Heatmaps")
 
 pivot_mean_sample_fixture = df.pivot_table(
@@ -417,14 +596,14 @@ pivot_mean_sample_fixture = df.pivot_table(
     columns="Fixture",
     values="Leakage",
     aggfunc="mean"
-).reindex(columns=fixture_order)
+).reindex(index=sample_order, columns=fixture_order)
 
 pivot_ng_sample_fixture = df.pivot_table(
     index="Sample",
     columns="Fixture",
     values="NG_Flag",
     aggfunc="sum"
-).reindex(columns=fixture_order)
+).reindex(index=sample_order, columns=fixture_order)
 
 pivot_mean_fixture_bay = df.pivot_table(
     index="Fixture",
@@ -437,40 +616,49 @@ pivot_mean_fixture_bay = df.pivot_table(
 h1, h2 = st.columns(2)
 
 with h1:
-    fig = px.imshow(
-        pivot_mean_sample_fixture,
-        text_auto=".3f",
-        aspect="auto",
-        color_continuous_scale="YlGnBu",
+    fig = plot_heatmap(
+        pivot=pivot_mean_sample_fixture,
+        title="Mean Leakage by Sample and Fixture",
+        color_scale="YlGnBu",
+        text_format=".3f",
         zmin=0,
         zmax=SPEC,
-        title="Mean Leakage by Sample and Fixture"
+        colorbar_title="Mean Leakage"
     )
+
     st.plotly_chart(fig, use_container_width=True)
+
 
 with h2:
-    fig = px.imshow(
-        pivot_ng_sample_fixture,
-        text_auto=True,
-        aspect="auto",
-        color_continuous_scale="OrRd",
-        title="NG Count by Sample and Fixture"
+    fig = plot_heatmap(
+        pivot=pivot_ng_sample_fixture,
+        title="NG Count by Sample and Fixture",
+        color_scale="OrRd",
+        text_format=True,
+        zmin=0,
+        zmax=None,
+        colorbar_title="NG Count"
     )
+
     st.plotly_chart(fig, use_container_width=True)
 
 
-fig = px.imshow(
-    pivot_mean_fixture_bay,
-    text_auto=".3f",
-    aspect="auto",
-    color_continuous_scale="YlGnBu",
+fig = plot_heatmap(
+    pivot=pivot_mean_fixture_bay,
+    title="Mean Leakage by Fixture and Bay",
+    color_scale="YlGnBu",
+    text_format=".3f",
     zmin=0,
     zmax=SPEC,
-    title="Mean Leakage by Fixture and Bay"
+    colorbar_title="Mean Leakage"
 )
 
 st.plotly_chart(fig, use_container_width=True)
 
+
+# =========================
+# Abnormality analysis
+# =========================
 
 st.header("4. Abnormality analysis")
 
@@ -502,7 +690,10 @@ if not abnormal.empty:
         x="Fixture",
         y="Leakage",
         color="Bay",
-        category_orders={"Fixture": fixture_order},
+        category_orders={
+            "Fixture": fixture_order,
+            "Bay": bay_order
+        },
         title=f"Abnormal Sample Detail - Sample {selected_sample}"
     )
 
@@ -512,11 +703,17 @@ if not abnormal.empty:
         annotation_text=f"Spec={SPEC}"
     )
 
+    force_category_x(fig, fixture_order)
+
     st.plotly_chart(fig, use_container_width=True)
 
 else:
     st.success("No abnormal groups found by current criteria.")
 
+
+# =========================
+# Download report
+# =========================
 
 st.header("5. Download report data")
 
