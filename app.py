@@ -1090,12 +1090,199 @@ if previous_file is not None:
         )
 
         st.plotly_chart(fig, use_container_width=True)
+        # =========================
+        # Comparison heatmaps
+        # =========================
 
+        st.subheader("4.8 Comparison heatmaps")
+
+        def plot_compare_heatmap(
+            pivot,
+            title,
+            color_scale,
+            text_format=".3f",
+            zmin=None,
+            zmax=None,
+            colorbar_title=None
+        ):
+            """
+            Use explicit x/y labels to avoid Plotly treating
+            2.0 / 3.1 / 3.2 as continuous numeric axes.
+            """
+            pivot = pivot.copy()
+            pivot.index = [str(x) for x in pivot.index]
+            pivot.columns = [str(x) for x in pivot.columns]
+
+            x_labels = [str(x) for x in pivot.columns]
+            y_labels = [str(y) for y in pivot.index]
+
+            fig = px.imshow(
+                pivot.values,
+                x=x_labels,
+                y=y_labels,
+                text_auto=text_format,
+                aspect="auto",
+                color_continuous_scale=color_scale,
+                zmin=zmin,
+                zmax=zmax,
+                title=title
+            )
+
+            fig.update_xaxes(
+                type="category",
+                categoryorder="array",
+                categoryarray=x_labels
+            )
+
+            fig.update_yaxes(
+                type="category",
+                categoryorder="array",
+                categoryarray=y_labels
+            )
+
+            if colorbar_title:
+                fig.update_coloraxes(colorbar_title=colorbar_title)
+
+            return fig
+
+
+        # Heatmap 1: Mean leakage, Dataset x Fixture
+        pivot_compare_mean_fixture = compare_summary_fixture.pivot(
+            index="Dataset",
+            columns="Fixture",
+            values="Mean"
+        ).reindex(
+            index=["Before", "After"],
+            columns=compare_fixture_order
+        )
+
+        # Heatmap 2: NG rate, Dataset x Fixture
+        pivot_compare_ng_fixture = compare_summary_fixture.pivot(
+            index="Dataset",
+            columns="Fixture",
+            values="NG_Rate"
+        ).reindex(
+            index=["Before", "After"],
+            columns=compare_fixture_order
+        )
+
+        # Convert NG rate to percent for display
+        pivot_compare_ng_fixture_percent = pivot_compare_ng_fixture * 100
+
+        h1, h2 = st.columns(2)
+
+        with h1:
+            fig = plot_compare_heatmap(
+                pivot=pivot_compare_mean_fixture,
+                title="Before vs After - Mean Leakage by Fixture",
+                color_scale="YlGnBu",
+                text_format=".3f",
+                zmin=0,
+                zmax=SPEC,
+                colorbar_title="Mean Leakage"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with h2:
+            fig = plot_compare_heatmap(
+                pivot=pivot_compare_ng_fixture_percent,
+                title="Before vs After - NG Rate by Fixture (%)",
+                color_scale="OrRd",
+                text_format=".1f",
+                zmin=0,
+                zmax=100,
+                colorbar_title="NG Rate (%)"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+
+        # Heatmap 3: Before mean leakage by Fixture x Bay
+        before_bay_fixture = compare_summary_bay_fixture[
+            compare_summary_bay_fixture["Dataset"] == "Before"
+        ]
+
+        pivot_before_mean_bay_fixture = before_bay_fixture.pivot(
+            index="Fixture",
+            columns="Bay",
+            values="Mean"
+        ).reindex(
+            index=compare_fixture_order,
+            columns=compare_bay_order
+        )
+
+        # Heatmap 4: After mean leakage by Fixture x Bay
+        after_bay_fixture = compare_summary_bay_fixture[
+            compare_summary_bay_fixture["Dataset"] == "After"
+        ]
+
+        pivot_after_mean_bay_fixture = after_bay_fixture.pivot(
+            index="Fixture",
+            columns="Bay",
+            values="Mean"
+        ).reindex(
+            index=compare_fixture_order,
+            columns=compare_bay_order
+        )
+
+        h3, h4 = st.columns(2)
+
+        with h3:
+            fig = plot_compare_heatmap(
+                pivot=pivot_before_mean_bay_fixture,
+                title="Before - Mean Leakage by Fixture and Bay",
+                color_scale="YlGnBu",
+                text_format=".3f",
+                zmin=0,
+                zmax=SPEC,
+                colorbar_title="Mean Leakage"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with h4:
+            fig = plot_compare_heatmap(
+                pivot=pivot_after_mean_bay_fixture,
+                title="After - Mean Leakage by Fixture and Bay",
+                color_scale="YlGnBu",
+                text_format=".3f",
+                zmin=0,
+                zmax=SPEC,
+                colorbar_title="Mean Leakage"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+
+        # Heatmap 5: Improvement by Fixture
+        improvement_for_heatmap = compare_summary_fixture.pivot(
+            index="Fixture",
+            columns="Dataset",
+            values="Mean"
+        ).reindex(
+            index=compare_fixture_order,
+            columns=["Before", "After"]
+        )
+
+        improvement_for_heatmap["Mean Reduction"] = (
+            improvement_for_heatmap["Before"] - improvement_for_heatmap["After"]
+        )
+
+        pivot_improvement = improvement_for_heatmap[["Mean Reduction"]]
+
+        fig = plot_compare_heatmap(
+            pivot=pivot_improvement,
+            title="Mean Leakage Reduction by Fixture",
+            color_scale="Greens",
+            text_format=".3f",
+            zmin=0,
+            zmax=None,
+            colorbar_title="Mean Reduction"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
         # =========================
         # Improvement table
         # =========================
 
-        st.subheader("4.8 Improvement summary")
+        st.subheader("4.9 Improvement summary")
 
         before_summary = compare_summary_fixture[
             compare_summary_fixture["Dataset"] == "Before"
