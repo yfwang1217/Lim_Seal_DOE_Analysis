@@ -710,7 +710,458 @@ if not abnormal.empty:
 else:
     st.success("No abnormal groups found by current criteria.")
 
+# =========================
+# Before vs After comparison
+# =========================
 
+st.header("4. Before vs After Comparison")
+
+st.caption(
+    "Upload previous / before data here. The app will compare it with the current uploaded data above."
+)
+
+
+def parse_previous_dataset(uploaded_file, spec):
+    """
+    Parse previous 80A dataset.
+    This function supports:
+    1. Real CSV files
+    2. Excel files renamed as .csv
+    3. Section-style data with rows like 'bay1 2.0', 'bay1 3.1', 'bay1 3.2'
+    """
+
+    raw = uploaded_file.getvalue()
+
+    # Case 1: Excel file renamed as .csv
+    # Excel xlsx files usually start with PK
+    if raw[:2] == b"PK":
+        excel_file = pd.ExcelFile(io.BytesIO(raw))
+        sheet_name = excel_file.sheet_names[0]
+        raw_df = pd.read_excel(io.BytesIO(raw), sheet_name=sheet_name)
+
+    else:
+        # Case 2: normal CSV
+        encodings = ["gbk", "utf-8-sig", "utf-8", "latin1"]
+        raw_df = None
+
+        for enc in encodings:
+            try:
+                raw_df = pd.read_csv(io.BytesIO(raw), encoding=enc)
+                break
+            except Exception:
+                pass
+
+        if raw_df is None:
+            raise ValueError("Cannot read previous dataset. Please check file format.")
+
+    # Find leakage column
+    leakage_cols = [
+        c for c in raw_df.columns
+        if "Leakage_value" in str(c) or "Leakage" in str(c) or "leakage" in str(c).lower()
+    ]
+
+    if not leakage_cols:
+        raise ValueError("Cannot find leakage column in previous dataset.")
+
+    leakage_col = leakage_cols[0]
+
+    # Find pressure column if available
+    pressure_cols = [
+        c for c in raw_df.columns
+        if "air_pressure" in str(c) or "Pressure" in str(c)
+    ]
+    pressure_col = pressure_cols[0] if pressure_cols else None
+
+    # Find basic columns
+    sn_col = "SN" if "SN" in raw_df.columns else None
+    result_col = "Result" if "Result" in raw_df.columns else None
+    bay_col = "BayID" if "BayID" in raw_df.columns else None
+
+    parsed = []
+    current_fixture = None
+    current_bay_from_section = None
+
+    for idx, row in raw_df.iterrows():
+
+        # Detect section marker like "bay1 2.0"
+        row_values = [str(v).strip() for v in row.values if pd.notna(v)]
+        row_joined = " ".join(row_values)
+
+        section_match = re.search(r"bay\s*(\d+)\s*(\d\.\d)", row_joined, flags=re.I)
+
+        if section_match:
+            current_bay_from_section = section_match.group(1)
+            current_fixture = section_match.group(2)
+            continue
+
+        leakage = pd.to_numeric(row.get(leakage_col), errors="coerce")
+
+        if pd.isna(leakage):
+            continue
+
+        result = str(row.get(result_col, "")).strip().lower() if result_col else ""
+        bay = row.get(bay_col, current_bay_from_section) if bay_col else current_bay_from_section
+
+        if pd.isna(bay):
+            bay = current_bay_from_section
+
+        pressure = (
+            pd.to_numeric(row.get(pressure_col), errors="coerce")
+            if pressure_col
+            else np.nan
+        )
+
+        sn = str(row.get(sn_col, "Unknown")).strip() if sn_col else "Unknown"
+
+        parsed.append({
+            "Source": uploaded_file.name,
+            "Dataset": "Before",
+            "Row": idx,
+            "Sample": sn if sn not in ["nan", "None", ""] else "Unknown",
+            "Fixture": str(current_fixture).strip() if current_fixture else "Unknown",
+            "Bay": str(int(bay)) if pd.notna(bay) and str(bay).replace(".0", "").isdigit() else str(bay),
+            "Result": result,
+            "Pressure": pressure,
+            "Leakage": float(leakage),
+            "Spec": spec,
+            "Spec_Result": "NG" if float(leakage) > spec else "OK",
+            "NG_Flag": 1 if float(leakage) > spec else 0,
+        })
+
+    previous_df = pd.DataFrame(parsed)
+
+    if previous_df.empty:
+        raise ValueError("No valid leakage rows parsed from previous dataset.")
+
+    previous_df["Sample"] = previous_df["Sample"].astype(str).str.strip()
+    previous_df["Fixture"] = previous_df["Fixture"].astype(str).str.strip()
+    previous_df["Bay"] = previous_df["Bay"].astype(str).str.strip()
+    previous_df["Leakage"] = pd.to_numeric(previous_df["Leakage"], errors="coerce")
+    previous_df["NG_Flag"] = np.where(previous_df["Leakage"] > spec, 1, 0)
+    previous_df["Spec_Result"] = np.where(previous_df["Leakage"] > spec, "NG", "OK")
+
+    return previous_df
+
+
+def compare_summary_table(data, group_cols):
+    summary = (
+        data
+        .groupby(group_cols, dropna=False)
+        .agg(
+            N=("Leakage", "count"),
+            Mean=("Leakage", "mean"),
+            Median=("Leakage", "median"),
+            Std=("Leakage", "std"),
+            Min=("Leakage", "min"),
+            Q1=("Leakage", lambda x: x.quantile(0.25)),
+            Q3=("Leakage", lambda x: x.quantile(0.75)),
+            Max=("Leakage", "max"),
+            NG_Count=("NG_Flag", "sum"),
+        )
+        .reset_index()
+    )
+
+    summary["IQR"] = summary["Q3"] - summary["Q1"]
+    summary["Range"] = summary["Max"] - summary["Min"]
+    summary["NG_Rate"] = summary["NG_Count"] / summary["N"]
+
+    return summary
+
+
+previous_file = st.file_uploader(
+    "Upload previous / before dataset",
+    type=["csv", "xlsx", "xls"],
+    accept_multiple_files=False,
+    key="previous_dataset_uploader"
+)
+
+if previous_file is not None:
+
+    try:
+        before_df = parse_previous_dataset(previous_file, SPEC)
+
+        after_df = df.copy()
+        after_df["Dataset"] = "After"
+
+        # Keep same columns
+        keep_cols = [
+            "Dataset",
+            "Source",
+            "Sample",
+            "Fixture",
+            "Bay",
+            "Result",
+            "Pressure",
+            "Leakage",
+            "Spec",
+            "Spec_Result",
+            "NG_Flag"
+        ]
+
+        for col in keep_cols:
+            if col not in after_df.columns:
+                after_df[col] = np.nan
+
+        after_df = after_df[keep_cols]
+        before_df = before_df[keep_cols]
+
+        compare_df = pd.concat([before_df, after_df], ignore_index=True)
+
+        compare_df["Fixture"] = compare_df["Fixture"].astype(str).str.strip()
+        compare_df["Bay"] = compare_df["Bay"].astype(str).str.strip()
+        compare_df["Sample"] = compare_df["Sample"].astype(str).str.strip()
+
+        compare_fixture_order = sorted(
+            [str(x) for x in compare_df["Fixture"].dropna().unique()],
+            key=fixture_sort_key
+        )
+
+        compare_bay_order = sorted(
+            [str(x) for x in compare_df["Bay"].dropna().unique()],
+            key=fixture_sort_key
+        )
+
+        st.subheader("4.1 Parsed previous data")
+        st.dataframe(before_df.head(50), use_container_width=True)
+
+        # =========================
+        # Summary comparison
+        # =========================
+
+        st.subheader("4.2 Summary comparison by fixture")
+
+        compare_summary_fixture = compare_summary_table(
+            compare_df,
+            ["Dataset", "Fixture"]
+        )
+
+        st.dataframe(compare_summary_fixture, use_container_width=True)
+
+        # Pivot summary for easier reading
+        summary_pivot = compare_summary_fixture.pivot(
+            index="Fixture",
+            columns="Dataset",
+            values=["Mean", "Median", "Std", "Max", "NG_Rate"]
+        )
+
+        st.subheader("4.3 Pivot summary")
+        st.dataframe(summary_pivot, use_container_width=True)
+
+        # =========================
+        # Mean leakage comparison bar chart
+        # =========================
+
+        st.subheader("4.4 Mean leakage comparison")
+
+        fig = px.bar(
+            compare_summary_fixture,
+            x="Fixture",
+            y="Mean",
+            color="Dataset",
+            barmode="group",
+            category_orders={
+                "Fixture": compare_fixture_order,
+                "Dataset": ["Before", "After"]
+            },
+            title="Before vs After - Mean Leakage by Fixture",
+            text_auto=".3f"
+        )
+
+        fig.add_hline(
+            y=SPEC,
+            line_dash="dash",
+            annotation_text=f"Spec={SPEC}"
+        )
+
+        fig.update_xaxes(
+            type="category",
+            categoryorder="array",
+            categoryarray=compare_fixture_order
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # =========================
+        # NG rate comparison bar chart
+        # =========================
+
+        st.subheader("4.5 NG rate comparison")
+
+        compare_summary_fixture["NG_Rate_Percent"] = (
+            compare_summary_fixture["NG_Rate"] * 100
+        )
+
+        fig = px.bar(
+            compare_summary_fixture,
+            x="Fixture",
+            y="NG_Rate_Percent",
+            color="Dataset",
+            barmode="group",
+            category_orders={
+                "Fixture": compare_fixture_order,
+                "Dataset": ["Before", "After"]
+            },
+            title="Before vs After - NG Rate by Fixture",
+            text_auto=".1f"
+        )
+
+        fig.update_yaxes(title="NG Rate (%)")
+
+        fig.update_xaxes(
+            type="category",
+            categoryorder="array",
+            categoryarray=compare_fixture_order
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # =========================
+        # Boxplot comparison
+        # =========================
+
+        st.subheader("4.6 Leakage distribution comparison")
+
+        fig = px.box(
+            compare_df,
+            x="Fixture",
+            y="Leakage",
+            color="Dataset",
+            points="all",
+            category_orders={
+                "Fixture": compare_fixture_order,
+                "Dataset": ["Before", "After"]
+            },
+            title="Before vs After - Leakage Distribution by Fixture"
+        )
+
+        fig.add_hline(
+            y=SPEC,
+            line_dash="dash",
+            annotation_text=f"Spec={SPEC}"
+        )
+
+        fig.update_xaxes(
+            type="category",
+            categoryorder="array",
+            categoryarray=compare_fixture_order
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # =========================
+        # Fixture + Bay comparison
+        # =========================
+
+        st.subheader("4.7 Fixture / Bay comparison")
+
+        compare_summary_bay_fixture = compare_summary_table(
+            compare_df,
+            ["Dataset", "Bay", "Fixture"]
+        )
+
+        st.dataframe(compare_summary_bay_fixture, use_container_width=True)
+
+        fig = px.bar(
+            compare_summary_bay_fixture,
+            x="Fixture",
+            y="Mean",
+            color="Dataset",
+            facet_col="Bay",
+            barmode="group",
+            category_orders={
+                "Fixture": compare_fixture_order,
+                "Bay": compare_bay_order,
+                "Dataset": ["Before", "After"]
+            },
+            title="Before vs After - Mean Leakage by Fixture and Bay",
+            text_auto=".3f"
+        )
+
+        fig.add_hline(
+            y=SPEC,
+            line_dash="dash",
+            annotation_text=f"Spec={SPEC}"
+        )
+
+        fig.update_xaxes(
+            type="category",
+            categoryorder="array",
+            categoryarray=compare_fixture_order
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # =========================
+        # Improvement table
+        # =========================
+
+        st.subheader("4.8 Improvement summary")
+
+        before_summary = compare_summary_fixture[
+            compare_summary_fixture["Dataset"] == "Before"
+        ][["Fixture", "Mean", "NG_Rate"]].rename(
+            columns={
+                "Mean": "Before_Mean",
+                "NG_Rate": "Before_NG_Rate"
+            }
+        )
+
+        after_summary = compare_summary_fixture[
+            compare_summary_fixture["Dataset"] == "After"
+        ][["Fixture", "Mean", "NG_Rate"]].rename(
+            columns={
+                "Mean": "After_Mean",
+                "NG_Rate": "After_NG_Rate"
+            }
+        )
+
+        improvement = before_summary.merge(
+            after_summary,
+            on="Fixture",
+            how="outer"
+        )
+
+        improvement["Mean_Reduction"] = (
+            improvement["Before_Mean"] - improvement["After_Mean"]
+        )
+
+        improvement["Mean_Reduction_%"] = (
+            improvement["Mean_Reduction"] / improvement["Before_Mean"]
+        )
+
+        improvement["NG_Rate_Reduction"] = (
+            improvement["Before_NG_Rate"] - improvement["After_NG_Rate"]
+        )
+
+        improvement = improvement.sort_values(
+            by="Fixture",
+            key=lambda x: x.map(fixture_sort_key)
+        )
+
+        st.dataframe(improvement, use_container_width=True)
+
+        # =========================
+        # Download comparison Excel
+        # =========================
+
+        comparison_excel_bytes = to_excel_download({
+            "Before_Raw_Parsed": before_df,
+            "After_Raw_Parsed": after_df,
+            "Compare_All_Data": compare_df,
+            "Compare_By_Fixture": compare_summary_fixture,
+            "Compare_By_Bay_Fixture": compare_summary_bay_fixture,
+            "Improvement_Summary": improvement,
+        })
+
+        st.download_button(
+            label="Download before vs after comparison Excel",
+            data=comparison_excel_bytes,
+            file_name="LIM_Seal_Before_After_Comparison.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    except Exception as e:
+        st.error(f"Failed to run before vs after comparison: {e}")
 # =========================
 # Download report
 # =========================
