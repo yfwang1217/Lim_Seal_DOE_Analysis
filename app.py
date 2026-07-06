@@ -14,7 +14,7 @@ st.set_page_config(
 
 st.title("LIM Seal Self-Seal DOE Analysis")
 st.caption(
-    "Upload Everwin / ICT raw CSV files to generate fixture, bay, sample, "
+    "Upload raw CSV files to generate fixture, bay, sample, "
     "heatmap, and abnormality analysis automatically."
 )
 
